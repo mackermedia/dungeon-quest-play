@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dungeon Quest</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1a1423; color: #e8dcc8; font-family: ui-monospace, Menlo, monospace; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+  #game { line-height: 0; }
+  #game canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
+  #hud { font-size: 13px; opacity: .75; text-align: center; padding: 0 16px; }
+  #hud b { color: #ffd166; }
+</style>
+</head>
+<body>
+<div id="game"></div>
+<div id="hud"><b>Arrows / WASD</b> move &nbsp;·&nbsp; <b>Space</b> sword &nbsp;·&nbsp; day 0 build</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.90.0/phaser.min.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// ART: every sprite index lives here. Swap the sheet or an index and the whole
+// game follows. Indices are tile numbers in the packed Kenney sheet
+// (row-major, `cols` tiles per row). See assets/kenney/ for the sheets.
+// ---------------------------------------------------------------------------
+const ART = {
+  sheet: 'assets/kenney/tiny-dungeon.png',
+  tile: 16,
+  cols: 12,
+  hero: 97,            // knight. others: 84 wizard, 85 kid, 99 princess, 112 ranger
+  sword: 104,
+  floor: [48, 48, 48, 48, 49, 50],   // weighted: mostly plain, some specks
+  wall: 40,
+  wallTop: 36,
+  door: 45,
+  chest: 89,
+};
+
+const TILE = ART.tile;
+const ZOOM = 4;
+
+// One room. # wall, . floor, D door, C chest, @ hero start
+const ROOM = [
+  '################',
+  '#..............#',
+  '#..............#',
+  '#......C.......#',
+  '#..............#',
+  '#..............D',
+  '#..............#',
+  '#......@.......#',
+  '#..............#',
+  '#..............#',
+  '################',
+];
+
+class Room extends Phaser.Scene {
+  preload() {
+    this.load.spritesheet('tiles', ART.sheet, { frameWidth: TILE, frameHeight: TILE });
+  }
+
+  create() {
+    const rows = ROOM.length, cols = ROOM[0].length;
+    const data = [];
+    const decor = [];
+    let start = { x: 2, y: 2 };
+
+    for (let y = 0; y < rows; y++) {
+      const row = [];
+      for (let x = 0; x < cols; x++) {
+        const ch = ROOM[y][x];
+        if (ch === '#') {
+          // top row of walls shows the "top" tile, side walls the brick
+          row.push(y === 0 ? ART.wallTop : ART.wall);
+        } else if (ch === 'D') {
+          row.push(ART.door);
+        } else {
+          row.push(Phaser.Utils.Array.GetRandom(ART.floor));
+          if (ch === 'C') decor.push({ x, y, frame: ART.chest });
+          if (ch === '@') start = { x, y };
+        }
+      }
+      data.push(row);
+    }
+
+    const map = this.make.tilemap({ data, tileWidth: TILE, tileHeight: TILE });
+    const tileset = map.addTilesetImage('tiles', 'tiles', TILE, TILE, 0, 0);
+    const layer = map.createLayer(0, tileset, 0, 0);
+    layer.setCollision([ART.wall, ART.wallTop, ART.door]);
+
+    for (const d of decor) {
+      this.add.image(d.x * TILE + TILE / 2, d.y * TILE + TILE / 2, 'tiles', d.frame);
+    }
+
+    // Hero
+    this.hero = this.physics.add.sprite(start.x * TILE + TILE / 2, start.y * TILE + TILE / 2, 'tiles', ART.hero);
+    this.hero.body.setSize(10, 10).setOffset(3, 6);
+    this.hero.setCollideWorldBounds(true);
+    this.physics.add.collider(this.hero, layer);
+    this.facing = { x: 0, y: 1 };
+
+    // Sword (hidden until swung)
+    this.sword = this.add.image(0, 0, 'tiles', ART.sword).setVisible(false).setDepth(5);
+    this.swinging = false;
+
+    this.keys = this.input.keyboard.addKeys({
+      up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT',
+      w: 'W', a: 'A', s: 'S', d: 'D', space: 'SPACE', z: 'Z',
+    });
+
+    this.physics.world.setBounds(0, 0, cols * TILE, rows * TILE);
+    this.cameras.main.setBounds(0, 0, cols * TILE, rows * TILE);
+  }
+
+  update() {
+    const k = this.keys, h = this.hero, speed = 70;
+    let vx = 0, vy = 0;
+    if (k.left.isDown || k.a.isDown) vx = -1;
+    else if (k.right.isDown || k.d.isDown) vx = 1;
+    if (k.up.isDown || k.w.isDown) vy = -1;
+    else if (k.down.isDown || k.s.isDown) vy = 1;
+
+    if (this.swinging) { vx = 0; vy = 0; }
+    h.setVelocity(vx * speed, vy * speed);
+    if (vx && vy) h.body.velocity.normalize().scale(speed);
+
+    if (vx || vy) {
+      this.facing = { x: vx, y: vy };
+      if (vx) h.setFlipX(vx < 0);
+    }
+
+    if (Phaser.Input.Keyboard.JustDown(k.space) || Phaser.Input.Keyboard.JustDown(k.z)) this.swing();
+  }
+
+  swing() {
+    if (this.swinging) return;
+    this.swinging = true;
+    const f = this.facing;
+    const angle = Math.atan2(f.y, f.x);          // direction hero faces
+    const sw = this.sword.setVisible(true);
+    const r = 11;                                  // reach from hero center
+
+    // The sword sprite points up; rotate it to the facing direction and
+    // sweep 90 degrees across it.
+    const from = angle - Math.PI / 4, to = angle + Math.PI / 4;
+    const place = (a) => {
+      sw.setPosition(this.hero.x + Math.cos(a) * r, this.hero.y + Math.sin(a) * r);
+      sw.setRotation(a + Math.PI / 2);
+    };
+    place(from);
+    this.tweens.addCounter({
+      from: 0, to: 1, duration: 140, ease: 'Quad.Out',
+      onUpdate: (t) => place(Phaser.Math.Linear(from, to, t.getValue())),
+      onComplete: () => { sw.setVisible(false); this.swinging = false; },
+    });
+  }
+}
+
+new Phaser.Game({
+  type: Phaser.AUTO,
+  parent: 'game',
+  width: ROOM[0].length * TILE,
+  height: ROOM.length * TILE,
+  zoom: ZOOM,
+  pixelArt: true,
+  backgroundColor: '#1a1423',
+  physics: { default: 'arcade', arcade: { debug: false } },
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [Room],
+});
+</script>
+</body>
+</html>
