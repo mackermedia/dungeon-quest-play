@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dungeon Quest</title>
+<title>Miniature Man</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #1a1423; color: #e8dcc8; font-family: ui-monospace, Menlo, monospace; }
+  html, body { margin: 0; height: 100%; background: #10141c; color: #e8dcc8; font-family: ui-monospace, Menlo, monospace; }
   body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
   #game { line-height: 0; }
   #game canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
@@ -15,144 +15,291 @@
 </head>
 <body>
 <div id="game"></div>
-<div id="hud"><b>Arrows / WASD</b> move &nbsp;·&nbsp; <b>Space</b> sword &nbsp;·&nbsp; day 0 build</div>
+<div id="hud"><b>Arrows / WASD</b> move &nbsp;·&nbsp; <b>Space</b> sword &nbsp;·&nbsp; day 1 build</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.90.0/phaser.min.js"></script>
 <script>
 // ---------------------------------------------------------------------------
-// ART: every sprite index lives here. Swap the sheet or an index and the whole
-// game follows. Indices are tile numbers in the packed Kenney sheet
-// (row-major, `cols` tiles per row). See assets/kenney/ for the sheets.
+// ART: every sheet path and sprite index lives here. See assets/zeldalike/CREDITS.md
+// for frame layouts. Tile indices are row * cols + col in the packed sheet.
 // ---------------------------------------------------------------------------
+const params = new URLSearchParams(location.search);
+const HERO_COLOR = ['red', 'green', 'steel', 'blue'].includes(params.get('hero')) ? params.get('hero') : 'green';
+
 const ART = {
-  sheet: 'assets/kenney/tiny-dungeon.png',
-  tile: 16,
-  cols: 12,
-  hero: 97,            // knight. others: 84 wizard, 85 kid, 99 princess, 112 ranger
-  sword: 104,
-  floor: [48, 48, 48, 48, 49, 50],   // weighted: mostly plain, some specks
-  wall: 40,
-  wallTop: 36,
-  door: 45,
-  chest: 89,
+  tiles: { sheet: 'assets/zeldalike/overworld.png', size: 16, cols: 40 },
+  hero: { sheet: `assets/zeldalike/hero-${HERO_COLOR}.png`, walkW: 16, walkH: 32, walkCols: 17, atkW: 32, atkH: 32, atkCols: 8,
+          walkRow: { down: 0, left: 1, up: 2, right: 3 }, atkRow: { down: 4, up: 5, right: 6, left: 7 } },
+  stump: { sheet: 'assets/zeldalike/log.png', w: 32, h: 32, cols: 6, row: { left: 0, right: 1, up: 2, down: 3 } },
+  spider: { sheet: 'assets/zeldalike/spider.png', w: 16, h: 16, cols: 4 },
+  objects: { sheet: 'assets/zeldalike/objects.png', heart: { full: 4, half: 6, empty: 8 }, puff: [34, 35, 36, 37, 38] },
+  // Overgrown Garden tiles (overworld.png)
+  grass: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 121, 200],
+  hedge: { tl: 521, t: 522, tr: 523, l: 561, r: 563, bl: 601, b: 602, br: 603 },
+  tree: [[645, 646], [685, 686]],
+  bush: 209,
+  flower: [320, 443],
+  rock: 208,
 };
 
-const TILE = ART.tile;
+const T = ART.tiles.size;
 const ZOOM = 4;
 
-// One room. # wall, . floor, D door, C chest, @ hero start
+// Overgrown Garden, room 1. H hedge, . grass, T tree (top-left of a 2x2), b bush, f flowers, r rock, D exit, @ start
+// Enemies: S stump (wanders), s spider (chases)
 const ROOM = [
-  '################',
-  '#..............#',
-  '#..............#',
-  '#......C.......#',
-  '#..............#',
-  '#..............D',
-  '#..............#',
-  '#......@.......#',
-  '#..............#',
-  '#..............#',
-  '################',
+  'HHHHHHHHHHHHHHHH',
+  'H..............H',
+  'H....T.....f...H',
+  'H..........S...H',
+  'H.f............D',
+  'H......@.......H',
+  'H..b.......b...H',
+  'H..............H',
+  'H..T.....r.s.f.H',
+  'H..............H',
+  'HHHHHHHHHHHHHHHH',
 ];
 
-class Room extends Phaser.Scene {
+const SPEED = 70;
+
+class Garden extends Phaser.Scene {
   preload() {
-    this.load.spritesheet('tiles', ART.sheet, { frameWidth: TILE, frameHeight: TILE });
+    this.load.image('tiles', ART.tiles.sheet);
+    this.load.spritesheet('hero', ART.hero.sheet, { frameWidth: ART.hero.walkW, frameHeight: ART.hero.walkH });
+    this.load.spritesheet('heroAtk', ART.hero.sheet, { frameWidth: ART.hero.atkW, frameHeight: ART.hero.atkH });
+    this.load.spritesheet('stump', ART.stump.sheet, { frameWidth: ART.stump.w, frameHeight: ART.stump.h });
+    this.load.spritesheet('spider', ART.spider.sheet, { frameWidth: ART.spider.w, frameHeight: ART.spider.h });
+    this.load.spritesheet('obj16', ART.objects.sheet, { frameWidth: 16, frameHeight: 16 });
+    this.load.spritesheet('obj32', ART.objects.sheet, { frameWidth: 32, frameHeight: 32 });
   }
 
   create() {
-    const rows = ROOM.length, cols = ROOM[0].length;
-    const data = [];
-    const decor = [];
-    let start = { x: 2, y: 2 };
-
-    for (let y = 0; y < rows; y++) {
-      const row = [];
-      for (let x = 0; x < cols; x++) {
-        const ch = ROOM[y][x];
-        if (ch === '#') {
-          // top row of walls shows the "top" tile, side walls the brick
-          row.push(y === 0 ? ART.wallTop : ART.wall);
-        } else if (ch === 'D') {
-          row.push(ART.door);
-        } else {
-          row.push(Phaser.Utils.Array.GetRandom(ART.floor));
-          if (ch === 'C') decor.push({ x, y, frame: ART.chest });
-          if (ch === '@') start = { x, y };
-        }
-      }
-      data.push(row);
-    }
-
-    const map = this.make.tilemap({ data, tileWidth: TILE, tileHeight: TILE });
-    const tileset = map.addTilesetImage('tiles', 'tiles', TILE, TILE, 0, 0);
-    const layer = map.createLayer(0, tileset, 0, 0);
-    layer.setCollision([ART.wall, ART.wallTop, ART.door]);
-
-    for (const d of decor) {
-      this.add.image(d.x * TILE + TILE / 2, d.y * TILE + TILE / 2, 'tiles', d.frame);
-    }
+    window.__scene = this; // handy for poking at the game from the console
+    this.buildAnims();
+    const { rows, cols, start, spawns } = this.buildRoom();
 
     // Hero
-    this.hero = this.physics.add.sprite(start.x * TILE + TILE / 2, start.y * TILE + TILE / 2, 'tiles', ART.hero);
-    this.hero.body.setSize(10, 10).setOffset(3, 6);
+    this.hero = this.physics.add.sprite(start.x * T + T / 2, start.y * T + T / 2, 'hero', 0);
     this.hero.setCollideWorldBounds(true);
-    this.physics.add.collider(this.hero, layer);
-    this.facing = { x: 0, y: 1 };
+    this.setHeroBody('hero');
+    this.physics.add.collider(this.hero, this.decor);
+    this.facing = 'down';
+    this.attacking = false;
+    this.invulnUntil = 0;
+    this.graceUntil = null;                    // set on the first update (the clock is 0 inside create)
+    this.hearts = 3; this.maxHearts = 3;
 
-    // Sword (hidden until swung)
-    this.sword = this.add.image(0, 0, 'tiles', ART.sword).setVisible(false).setDepth(5);
-    this.swinging = false;
+    // Sword hit zone (only active during the swing)
+    this.swordZone = this.add.zone(0, 0, 14, 14);
+    this.physics.add.existing(this.swordZone);
+    this.swordZone.body.setAllowGravity(false);
+    this.swordZone.body.enable = false;
 
-    this.keys = this.input.keyboard.addKeys({
-      up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT',
-      w: 'W', a: 'A', s: 'S', d: 'D', space: 'SPACE', z: 'Z',
-    });
+    // Enemies
+    this.enemies = this.physics.add.group();
+    for (const s of spawns) s.kind === 'stump' ? this.spawnStump(s.x, s.y) : this.spawnSpider(s.x, s.y);
+    this.physics.add.collider(this.enemies, this.decor);
+    this.physics.add.collider(this.enemies, this.enemies);
+    this.physics.add.overlap(this.swordZone, this.enemies, (_z, e) => this.hitEnemy(e));
+    this.physics.add.overlap(this.hero, this.enemies, (_h, e) => this.hurtHero(e));
 
-    this.physics.world.setBounds(0, 0, cols * TILE, rows * TILE);
-    this.cameras.main.setBounds(0, 0, cols * TILE, rows * TILE);
+    // HUD hearts
+    this.heartSprites = [];
+    for (let i = 0; i < this.maxHearts; i++) {
+      this.heartSprites.push(this.add.image(6 + i * 14, 6, 'obj16', ART.objects.heart.full).setOrigin(0, 0).setDepth(1000).setScrollFactor(0));
+    }
+    this.drawHearts();
+
+    this.keys = this.input.keyboard.addKeys({ up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT', w: 'W', a: 'A', s: 'S', d: 'D', space: 'SPACE', z: 'Z' });
+    this.physics.world.setBounds(0, 0, cols * T, rows * T);
+    this.cameras.main.setBounds(0, 0, cols * T, rows * T);
   }
 
-  update() {
-    const k = this.keys, h = this.hero, speed = 70;
-    let vx = 0, vy = 0;
-    if (k.left.isDown || k.a.isDown) vx = -1;
-    else if (k.right.isDown || k.d.isDown) vx = 1;
-    if (k.up.isDown || k.w.isDown) vy = -1;
-    else if (k.down.isDown || k.s.isDown) vy = 1;
+  // ---- world ----
+  buildRoom() {
+    const rows = ROOM.length, cols = ROOM[0].length;
+    const map = this.make.tilemap({ tileWidth: T, tileHeight: T, width: cols, height: rows });
+    const tileset = map.addTilesetImage('tiles', 'tiles', T, T, 0, 0);
+    this.ground = map.createBlankLayer('ground', tileset);
+    this.decor = map.createBlankLayer('decor', tileset);
+    let start = { x: 1, y: 1 };
+    const spawns = [];
+    const solid = new Set();
 
-    if (this.swinging) { vx = 0; vy = 0; }
-    h.setVelocity(vx * speed, vy * speed);
-    if (vx && vy) h.body.velocity.normalize().scale(speed);
+    for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+      this.ground.putTileAt(Phaser.Utils.Array.GetRandom(ART.grass), x, y);
+      const ch = ROOM[y][x];
+      let d = null;
+      if (ch === 'H') {
+        const h = ART.hedge;
+        d = y === 0 ? (x === 0 ? h.tl : x === cols - 1 ? h.tr : h.t)
+          : y === rows - 1 ? (x === 0 ? h.bl : x === cols - 1 ? h.br : h.b)
+          : x === 0 ? h.l : h.r;
+      } else if (ch === 'T') {
+        d = ART.tree[0][0];
+        this.decor.putTileAt(ART.tree[0][1], x + 1, y); this.decor.putTileAt(ART.tree[1][0], x, y + 1); this.decor.putTileAt(ART.tree[1][1], x + 1, y + 1);
+        ART.tree.flat().forEach(i => solid.add(i));
+      } else if (ch === 'b') d = ART.bush;
+      else if (ch === 'r') d = ART.rock;
+      else if (ch === 'f') d = Phaser.Utils.Array.GetRandom(ART.flower);
+      else if (ch === '@') start = { x, y };
+      else if (ch === 'S') spawns.push({ kind: 'stump', x, y });
+      else if (ch === 's') spawns.push({ kind: 'spider', x, y });
+      if (d != null) this.decor.putTileAt(d, x, y);
+    }
+    [...Object.values(ART.hedge), ART.bush, ART.rock].forEach(i => solid.add(i));
+    this.decor.setCollision([...solid]);
+    return { rows, cols, start, spawns };
+  }
+
+  buildAnims() {
+    const H = ART.hero, a = this.anims;
+    for (const [dir, row] of Object.entries(H.walkRow)) {
+      a.create({ key: 'walk-' + dir, frames: a.generateFrameNumbers('hero', { start: row * H.walkCols, end: row * H.walkCols + 3 }), frameRate: 8, repeat: -1 });
+    }
+    for (const [dir, row] of Object.entries(H.atkRow)) {
+      a.create({ key: 'atk-' + dir, frames: a.generateFrameNumbers('heroAtk', { start: row * H.atkCols, end: row * H.atkCols + 3 }), frameRate: 16, repeat: 0 });
+    }
+    const S = ART.stump;
+    for (const [dir, row] of Object.entries(S.row)) {
+      a.create({ key: 'stump-' + dir, frames: a.generateFrameNumbers('stump', { start: row * S.cols, end: row * S.cols + 3 }), frameRate: 6, repeat: -1 });
+    }
+    a.create({ key: 'spider-walk', frames: a.generateFrameNumbers('spider', { start: 0, end: 3 }), frameRate: 8, repeat: -1 });
+    a.create({ key: 'puff', frames: ART.objects.puff.map(f => ({ key: 'obj32', frame: f })), frameRate: 14, repeat: 0 });
+  }
+
+  setHeroBody(texture) {
+    // 12x10 box at the feet, whichever frame size is showing
+    const w = texture === 'hero' ? ART.hero.walkW : ART.hero.atkW, h = texture === 'hero' ? ART.hero.walkH : ART.hero.atkH;
+    this.hero.body.setSize(12, 10).setOffset((w - 12) / 2, h - 14);
+  }
+
+  // ---- enemies ----
+  spawnStump(tx, ty) {
+    const e = this.enemies.create(tx * T + T / 2, ty * T + T / 2, 'stump', 0);
+    e.kind = 'stump'; e.hp = 2; e.body.setSize(14, 12).setOffset(9, 16); e.setCollideWorldBounds(true);
+    e.play('stump-down');
+    e.think = () => {
+      const dirs = [['down', 0, 1], ['up', 0, -1], ['left', -1, 0], ['right', 1, 0], ['idle', 0, 0]];
+      const [name, dx, dy] = Phaser.Utils.Array.GetRandom(dirs);
+      if (name === 'idle') { e.setVelocity(0); e.anims.stop(); e.setFrame(0); }
+      else { e.setVelocity(dx * 25, dy * 25); e.play('stump-' + name, true); }
+    };
+    e.think();
+    e.timer = this.time.addEvent({ delay: Phaser.Math.Between(900, 1800), loop: true, callback: () => { if (e.active && !e.stunned) e.think(); } });
+    return e;
+  }
+
+  spawnSpider(tx, ty) {
+    const e = this.enemies.create(tx * T + T / 2, ty * T + T / 2, 'spider', 0);
+    e.kind = 'spider'; e.hp = 1; e.body.setSize(12, 10).setOffset(2, 5); e.setCollideWorldBounds(true);
+    e.play('spider-walk');
+    return e;
+  }
+
+  hitEnemy(e) {
+    if (!e.active || e.stunned) return;
+    e.hp -= 1; e.stunned = true;
+    const kb = new Phaser.Math.Vector2(e.x - this.hero.x, e.y - this.hero.y).normalize().scale(140);
+    e.setVelocity(kb.x, kb.y); e.setTintFill(0xffffff);
+    this.cameras.main.shake(60, 0.004);
+    this.time.delayedCall(90, () => e.active && e.clearTint());
+    this.time.delayedCall(220, () => {
+      if (!e.active) return;
+      e.stunned = false;
+      if (e.hp <= 0) this.killEnemy(e); else if (e.kind === 'stump') e.think();
+    });
+  }
+
+  killEnemy(e) {
+    const p = this.add.sprite(e.x, e.y, 'obj32', ART.objects.puff[0]).setDepth(500);
+    p.play('puff'); p.once('animationcomplete', () => p.destroy());
+    if (e.timer) e.timer.remove();
+    e.destroy();
+  }
+
+  hurtHero(e) {
+    if (this.time.now < this.invulnUntil || !e.active) return;
+    this.hearts = Math.max(0, this.hearts - 0.5);
+    this.drawHearts();
+    this.invulnUntil = this.time.now + 1000;
+    const kb = new Phaser.Math.Vector2(this.hero.x - e.x, this.hero.y - e.y).normalize().scale(160);
+    this.hero.setVelocity(kb.x, kb.y);
+    // the enemy bounces off too, so it can't sit on top of you
+    e.stunned = true; e.setVelocity(-kb.x * 0.6, -kb.y * 0.6);
+    this.time.delayedCall(500, () => { if (!e.active) return; e.stunned = false; if (e.kind === 'stump') e.think(); });
+    this.hurtUntil = this.time.now + 180;
+    this.cameras.main.shake(100, 0.008);
+    this.tweens.add({ targets: this.hero, alpha: 0.2, duration: 80, yoyo: true, repeat: 5, onComplete: () => this.hero.setAlpha(1) });
+    if (this.hearts <= 0) {
+      this.cameras.main.fade(600, 0, 0, 0);
+      this.time.delayedCall(700, () => this.scene.restart());
+    }
+  }
+
+  drawHearts() {
+    const H = ART.objects.heart;
+    this.heartSprites.forEach((s, i) => {
+      const v = this.hearts - i;
+      s.setFrame(v >= 1 ? H.full : v >= 0.5 ? H.half : H.empty);
+    });
+  }
+
+  // ---- hero ----
+  update() {
+    const k = this.keys, h = this.hero;
+    const now = this.time.now;
+    if (this.graceUntil === null) this.graceUntil = now + 1500;   // enemies leave you alone right after spawn
+
+    // chasers
+    this.enemies.children.iterate(e => {
+      if (!e || !e.active || e.kind !== 'spider' || e.stunned) return;
+      const d = Phaser.Math.Distance.Between(e.x, e.y, h.x, h.y);
+      if (d < 70 && this.time.now > this.graceUntil) { this.physics.moveToObject(e, h, 40); e.setFlipX(e.body.velocity.x < 0); } else e.setVelocity(0);
+    });
+
+    if (this.hurtUntil && now < this.hurtUntil) return;           // knockback owns the velocity
+    if (this.attacking) { h.setVelocity(0); return; }
+
+    let vx = 0, vy = 0;
+    if (k.left.isDown || k.a.isDown) vx = -1; else if (k.right.isDown || k.d.isDown) vx = 1;
+    if (k.up.isDown || k.w.isDown) vy = -1; else if (k.down.isDown || k.s.isDown) vy = 1;
+
+    h.setVelocity(vx * SPEED, vy * SPEED);
+    if (vx && vy) h.body.velocity.normalize().scale(SPEED);
 
     if (vx || vy) {
-      this.facing = { x: vx, y: vy };
-      if (vx) h.setFlipX(vx < 0);
+      // facing follows the dominant axis, horizontal wins ties
+      this.facing = vx ? (vx < 0 ? 'left' : 'right') : (vy < 0 ? 'up' : 'down');
+      h.play('walk-' + this.facing, true);
+    } else {
+      h.anims.stop();
+      h.setFrame(ART.hero.walkRow[this.facing] * ART.hero.walkCols);
     }
+    h.setDepth(h.y);
 
     if (Phaser.Input.Keyboard.JustDown(k.space) || Phaser.Input.Keyboard.JustDown(k.z)) this.swing();
   }
 
   swing() {
-    if (this.swinging) return;
-    this.swinging = true;
-    const f = this.facing;
-    const angle = Math.atan2(f.y, f.x);          // direction hero faces
-    const sw = this.sword.setVisible(true);
-    const r = 11;                                  // reach from hero center
+    if (this.attacking) return;
+    this.attacking = true;
+    const h = this.hero, dir = this.facing;
+    h.setTexture('heroAtk'); this.setHeroBody('heroAtk');
+    h.play('atk-' + dir);
 
-    // The sword sprite points up; rotate it to the facing direction and
-    // sweep 90 degrees across it.
-    const from = angle - Math.PI / 4, to = angle + Math.PI / 4;
-    const place = (a) => {
-      sw.setPosition(this.hero.x + Math.cos(a) * r, this.hero.y + Math.sin(a) * r);
-      sw.setRotation(a + Math.PI / 2);
-    };
-    place(from);
-    this.tweens.addCounter({
-      from: 0, to: 1, duration: 140, ease: 'Quad.Out',
-      onUpdate: (t) => place(Phaser.Math.Linear(from, to, t.getValue())),
-      onComplete: () => { sw.setVisible(false); this.swinging = false; },
+    const off = { down: [0, 12], up: [0, -14], left: [-13, 0], right: [13, 0] }[dir];
+    const z = this.swordZone;
+    z.setPosition(h.x + off[0], h.y + off[1]);
+    z.body.enable = true;
+    z.body.reset(h.x + off[0], h.y + off[1]);
+
+    h.once('animationcomplete', () => {
+      z.body.enable = false;
+      h.setTexture('hero'); this.setHeroBody('hero');
+      h.setFrame(ART.hero.walkRow[dir] * ART.hero.walkCols);
+      this.attacking = false;
     });
   }
 }
@@ -160,14 +307,14 @@ class Room extends Phaser.Scene {
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
-  width: ROOM[0].length * TILE,
-  height: ROOM.length * TILE,
+  width: ROOM[0].length * T,
+  height: ROOM.length * T,
   zoom: ZOOM,
   pixelArt: true,
-  backgroundColor: '#1a1423',
+  backgroundColor: '#10141c',
   physics: { default: 'arcade', arcade: { debug: false } },
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-  scene: [Room],
+  scene: [Garden],
 });
 </script>
 </body>
