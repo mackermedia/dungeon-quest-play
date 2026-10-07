@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Miniature Man</title>
+<link rel="icon" href="data:,">
 <style>
   html, body { margin: 0; height: 100%; background: #10141c; color: #e8dcc8; font-family: ui-monospace, Menlo, monospace; }
   body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
@@ -15,7 +16,7 @@
 </head>
 <body>
 <div id="game"></div>
-<div id="hud"><b>Arrows / WASD</b> move &nbsp;·&nbsp; <b>Space</b> sword &nbsp;·&nbsp; day 1 build</div>
+<div id="hud"><b>Arrows / WASD</b> move &nbsp;·&nbsp; <b>Space</b> sword &nbsp;·&nbsp; <b>Shift</b> shield (once you find it) &nbsp;·&nbsp; day 1 build</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.90.0/phaser.min.js"></script>
 <script>
@@ -29,39 +30,80 @@ const HERO_COLOR = ['red', 'green', 'steel', 'blue'].includes(params.get('hero')
 const ART = {
   tiles: { sheet: 'assets/zeldalike/overworld.png', size: 16, cols: 40 },
   hero: { sheet: `assets/zeldalike/hero-${HERO_COLOR}.png`, walkW: 16, walkH: 32, walkCols: 17, atkW: 32, atkH: 32, atkCols: 8,
-          walkRow: { down: 0, left: 1, up: 2, right: 3 }, atkRow: { down: 4, up: 5, right: 6, left: 7 } },
+          walkRow: { down: 0, right: 1, up: 2, left: 3 }, atkRow: { down: 4, up: 5, right: 6, left: 7 } },
   stump: { sheet: 'assets/zeldalike/log.png', w: 32, h: 32, cols: 6, row: { left: 0, right: 1, up: 2, down: 3 } },
   spider: { sheet: 'assets/zeldalike/spider.png', w: 16, h: 16, cols: 4 },
-  objects: { sheet: 'assets/zeldalike/objects.png', heart: { full: 4, half: 6, empty: 8 }, puff: [34, 35, 36, 37, 38] },
+  objects: { sheet: 'assets/zeldalike/objects.png', heart: { full: 4, half: 6, empty: 8 }, puff: [34, 35, 36, 37, 38], chestClosed: 0, chestOpen: 1 },
+  items: { sheet: 'assets/kenney/tiny-dungeon.png', shield: 65 },     // placeholder until we draw our own
   // Overgrown Garden tiles (overworld.png)
   grass: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 121, 200],
   hedge: { tl: 521, t: 522, tr: 523, l: 561, r: 563, bl: 601, b: 602, br: 603 },
   tree: [[645, 646], [685, 686]],
   bush: 209,
-  flower: [320, 443],
   rock: 208,
+  flower: [320, 443],
 };
 
 const T = ART.tiles.size;
 const ZOOM = 4;
-
-// Overgrown Garden, room 1. H hedge, . grass, T tree (top-left of a 2x2), b bush, f flowers, r rock, D exit, @ start
-// Enemies: S stump (wanders), s spider (chases)
-const ROOM = [
-  'HHHHHHHHHHHHHHHH',
-  'H..............H',
-  'H....T.....f...H',
-  'H..........S...H',
-  'H.f............D',
-  'H......@.......H',
-  'H..b.......b...H',
-  'H..............H',
-  'H..T.....r.s.f.H',
-  'H..............H',
-  'HHHHHHHHHHHHHHHH',
-];
-
 const SPEED = 70;
+
+// ---------------------------------------------------------------------------
+// ROOMS. H hedge, . grass, T tree (top-left of 2x2), b small rock, r rock, f flowers,
+// @ start, S stump, s spider, C chest, D door (on an edge). exits: which room each
+// edge's door leads to. Doors stay closed until every enemy in the room is gone.
+// ---------------------------------------------------------------------------
+const ROOMS = {
+  entrance: {
+    exits: { right: 'path' },
+    map: [
+      'HHHHHHHHHHHHHHHH',
+      'H..............H',
+      'H....T.....f...H',
+      'H..........S...H',
+      'H.f............D',
+      'H......@.......H',
+      'H..b.......b...H',
+      'H..............H',
+      'H..T.....r.s.f.H',
+      'H..............H',
+      'HHHHHHHHHHHHHHHH',
+    ],
+  },
+  path: {
+    exits: { left: 'entrance', right: 'shrine' },
+    map: [
+      'HHHHHHHHHHHHHHHH',
+      'H....r.........H',
+      'H..s....T......H',
+      'H.......b..f...H',
+      'D.........S....H',
+      'H..T...........D',
+      'H......b...s...H',
+      'H.f.........T..H',
+      'H.....S........H',
+      'H..........r...H',
+      'HHHHHHHHHHHHHHHH',
+    ],
+  },
+  shrine: {
+    exits: { left: 'path' },
+    map: [
+      'HHHHHHHHHHHHHHHH',
+      'H..f.......f...H',
+      'H..T.......T...H',
+      'H..............H',
+      'H.....S.S......H',
+      'D..............H',
+      'H......C.......H',
+      'H..............H',
+      'H..T.......T...H',
+      'H..f.......f...H',
+      'HHHHHHHHHHHHHHHH',
+    ],
+  },
+};
+const START_ROOM = 'entrance';
 
 class Garden extends Phaser.Scene {
   preload() {
@@ -72,87 +114,203 @@ class Garden extends Phaser.Scene {
     this.load.spritesheet('spider', ART.spider.sheet, { frameWidth: ART.spider.w, frameHeight: ART.spider.h });
     this.load.spritesheet('obj16', ART.objects.sheet, { frameWidth: 16, frameHeight: 16 });
     this.load.spritesheet('obj32', ART.objects.sheet, { frameWidth: 32, frameHeight: 32 });
+    this.load.spritesheet('items', ART.items.sheet, { frameWidth: 16, frameHeight: 16 });
   }
 
   create() {
     window.__scene = this; // handy for poking at the game from the console
     this.buildAnims();
-    const { rows, cols, start, spawns } = this.buildRoom();
+
+    // Things that survive room changes
+    this.hearts = 3; this.maxHearts = 3;
+    this.hasShield = false;
+    this.cleared = {};          // room name -> true once its enemies are gone
+    this.opened = {};           // room name -> true once its chest was opened
 
     // Hero
-    this.hero = this.physics.add.sprite(start.x * T + T / 2, start.y * T + T / 2, 'hero', 0);
+    this.hero = this.physics.add.sprite(0, 0, 'hero', 0);
     this.hero.setCollideWorldBounds(true);
     this.setHeroBody('hero');
-    this.physics.add.collider(this.hero, this.decor);
     this.facing = 'down';
-    this.attacking = false;
-    this.invulnUntil = 0;
-    this.graceUntil = null;                    // set on the first update (the clock is 0 inside create)
-    this.hearts = 3; this.maxHearts = 3;
+    this.attacking = false; this.attackStarted = 0;
+    this.blocking = false;
+    this.invulnUntil = 0; this.hurtUntil = 0;
+    this.graceUntil = null;     // set on the first update (the clock is 0 inside create)
+    this.changingRoom = false;
 
-    // Sword hit zone (only active during the swing)
     this.swordZone = this.add.zone(0, 0, 14, 14);
     this.physics.add.existing(this.swordZone);
     this.swordZone.body.setAllowGravity(false);
     this.swordZone.body.enable = false;
 
-    // Enemies
-    this.enemies = this.physics.add.group();
-    for (const s of spawns) s.kind === 'stump' ? this.spawnStump(s.x, s.y) : this.spawnSpider(s.x, s.y);
-    this.physics.add.collider(this.enemies, this.decor);
-    this.physics.add.collider(this.enemies, this.enemies);
-    this.physics.add.overlap(this.swordZone, this.enemies, (_z, e) => this.hitEnemy(e));
-    this.physics.add.overlap(this.hero, this.enemies, (_h, e) => this.hurtHero(e));
+    this.shieldSprite = this.add.image(0, 0, 'items', ART.items.shield).setVisible(false).setDepth(5000);
 
-    // HUD hearts
+    this.enemies = this.physics.add.group();
+    this.doorZones = this.physics.add.staticGroup();
+    this.pickups = this.physics.add.group();
+
+    // HUD
     this.heartSprites = [];
     for (let i = 0; i < this.maxHearts; i++) {
-      this.heartSprites.push(this.add.image(6 + i * 14, 6, 'obj16', ART.objects.heart.full).setOrigin(0, 0).setDepth(1000).setScrollFactor(0));
+      this.heartSprites.push(this.add.image(6 + i * 14, 6, 'obj16', ART.objects.heart.full).setOrigin(0, 0).setDepth(10000).setScrollFactor(0));
     }
+    this.shieldIcon = this.add.image(6 + this.maxHearts * 14 + 4, 6, 'items', ART.items.shield).setOrigin(0, 0).setDepth(10000).setScrollFactor(0).setVisible(false);
+    this.banner = this.add.text(128, 60, '', { fontFamily: 'monospace', fontSize: '8px', color: '#fff8e0', backgroundColor: '#10141cc0', padding: { x: 4, y: 2 } })
+      .setOrigin(0.5).setDepth(10000).setScrollFactor(0).setVisible(false);
     this.drawHearts();
 
-    this.keys = this.input.keyboard.addKeys({ up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT', w: 'W', a: 'A', s: 'S', d: 'D', space: 'SPACE', z: 'Z' });
-    this.physics.world.setBounds(0, 0, cols * T, rows * T);
-    this.cameras.main.setBounds(0, 0, cols * T, rows * T);
+    this.keys = this.input.keyboard.addKeys({ up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT', w: 'W', a: 'A', s: 'S', d: 'D', space: 'SPACE', z: 'Z', shift: 'SHIFT', x: 'X' });
+
+    this.loadRoom(START_ROOM, null);
+    this.cameras.main.fadeIn(300);
   }
 
-  // ---- world ----
-  buildRoom() {
-    const rows = ROOM.length, cols = ROOM[0].length;
-    const map = this.make.tilemap({ tileWidth: T, tileHeight: T, width: cols, height: rows });
-    const tileset = map.addTilesetImage('tiles', 'tiles', T, T, 0, 0);
-    this.ground = map.createBlankLayer('ground', tileset);
-    this.decor = map.createBlankLayer('decor', tileset);
+  // ---- rooms ----
+  loadRoom(name, enteredFrom) {
+    const room = ROOMS[name];
+    this.roomName = name;
+    const rows = room.map.length, cols = room.map[0].length;
+
+    // tear down the old room
+    if (this.map) { this.ground.destroy(); this.decor.destroy(); this.map.destroy(); }
+    this.enemies.clear(true, true);
+    this.doorZones.clear(true, true);
+    this.pickups.clear(true, true);
+    if (this.colliders) this.colliders.forEach(c => c.destroy());
+    this.colliders = [];
+
+    this.map = this.make.tilemap({ tileWidth: T, tileHeight: T, width: cols, height: rows });
+    const tileset = this.map.addTilesetImage('tiles', 'tiles', T, T, 0, 0);
+    this.ground = this.map.createBlankLayer('ground', tileset);
+    this.decor = this.map.createBlankLayer('decor', tileset);
+    this.decor.setDepth(0.5);
+
     let start = { x: 1, y: 1 };
-    const spawns = [];
+    const spawns = [], doors = [];
     const solid = new Set();
+    const h = ART.hedge;
+    const hedgeFor = (x, y) => y === 0 ? (x === 0 ? h.tl : x === cols - 1 ? h.tr : h.t)
+      : y === rows - 1 ? (x === 0 ? h.bl : x === cols - 1 ? h.br : h.b) : x === 0 ? h.l : h.r;
 
     for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
       this.ground.putTileAt(Phaser.Utils.Array.GetRandom(ART.grass), x, y);
-      const ch = ROOM[y][x];
+      const ch = room.map[y][x];
       let d = null;
-      if (ch === 'H') {
-        const h = ART.hedge;
-        d = y === 0 ? (x === 0 ? h.tl : x === cols - 1 ? h.tr : h.t)
-          : y === rows - 1 ? (x === 0 ? h.bl : x === cols - 1 ? h.br : h.b)
-          : x === 0 ? h.l : h.r;
+      if (ch === 'H') d = hedgeFor(x, y);
+      else if (ch === 'D') {
+        const side = x === 0 ? 'left' : x === cols - 1 ? 'right' : y === 0 ? 'up' : 'down';
+        doors.push({ x, y, side, hedge: hedgeFor(x, y) });
       } else if (ch === 'T') {
         d = ART.tree[0][0];
         this.decor.putTileAt(ART.tree[0][1], x + 1, y); this.decor.putTileAt(ART.tree[1][0], x, y + 1); this.decor.putTileAt(ART.tree[1][1], x + 1, y + 1);
-        ART.tree.flat().forEach(i => solid.add(i));
       } else if (ch === 'b') d = ART.bush;
       else if (ch === 'r') d = ART.rock;
       else if (ch === 'f') d = Phaser.Utils.Array.GetRandom(ART.flower);
       else if (ch === '@') start = { x, y };
       else if (ch === 'S') spawns.push({ kind: 'stump', x, y });
       else if (ch === 's') spawns.push({ kind: 'spider', x, y });
+      else if (ch === 'C') this.spawnChest(name, x, y);
       if (d != null) this.decor.putTileAt(d, x, y);
     }
-    [...Object.values(ART.hedge), ART.bush, ART.rock].forEach(i => solid.add(i));
+    [...Object.values(h), ...ART.tree.flat(), ART.bush, ART.rock].forEach(i => solid.add(i));
     this.decor.setCollision([...solid]);
-    return { rows, cols, start, spawns };
+
+    // doors: a zone at the gap, plus a hedge tile that is removed when the room is clear
+    this.doors = doors;
+    for (const door of doors) {
+      const z = this.doorZones.create(door.x * T + T / 2, door.y * T + T / 2, null).setVisible(false);
+      z.body.setSize(T, T); z.door = door;
+    }
+
+    // enemies (skip if this room was already cleared)
+    if (!this.cleared[name]) for (const s of spawns) s.kind === 'stump' ? this.spawnStump(s.x, s.y) : this.spawnSpider(s.x, s.y);
+    this.setDoors(this.enemies.countActive() === 0);
+
+    // physics wiring for this room
+    this.colliders.push(
+      this.physics.add.collider(this.hero, this.decor),
+      this.physics.add.collider(this.enemies, this.decor),
+      this.physics.add.collider(this.enemies, this.enemies),
+      this.physics.add.overlap(this.swordZone, this.enemies, (_z, e) => this.hitEnemy(e)),
+      this.physics.add.overlap(this.hero, this.enemies, (_h, e) => this.hurtHero(e)),
+      this.physics.add.overlap(this.hero, this.doorZones, (_h, z) => this.useDoor(z.door)),
+      this.physics.add.overlap(this.hero, this.pickups, (_h, p) => this.takePickup(p)),
+    );
+
+    // place the hero
+    let pos = start;
+    if (enteredFrom) {
+      const door = doors.find(d => d.side === enteredFrom);
+      const inward = { left: [1, 0], right: [-1, 0], up: [0, 1], down: [0, -1] }[enteredFrom];
+      pos = { x: door.x + inward[0], y: door.y + inward[1] };
+      this.facing = { left: 'right', right: 'left', up: 'down', down: 'up' }[enteredFrom];
+    }
+    this.hero.setPosition(pos.x * T + T / 2, pos.y * T + T / 2);
+    this.hero.setVelocity(0);
+    this.graceUntil = null;
+    this.physics.world.setBounds(0, 0, cols * T, rows * T);
+    this.cameras.main.setBounds(0, 0, cols * T, rows * T);
   }
 
+  setDoors(open) {
+    for (const d of this.doors) {
+      if (open) this.decor.removeTileAt(d.x, d.y);
+      else this.decor.putTileAt(d.hedge, d.x, d.y);
+    }
+    this.doorsOpen = open;
+  }
+
+  useDoor(door) {
+    if (!this.doorsOpen || this.changingRoom) return;
+    const next = ROOMS[this.roomName].exits[door.side];
+    if (!next) return;
+    this.changingRoom = true;
+    this.hero.setVelocity(0);
+    const from = { left: 'right', right: 'left', up: 'down', down: 'up' }[door.side];
+    this.cameras.main.fadeOut(120, 16, 20, 28);
+    this.cameras.main.once('camerafadeoutcomplete', () => {
+      this.loadRoom(next, from);
+      this.cameras.main.fadeIn(120, 16, 20, 28);
+      this.changingRoom = false;
+    });
+  }
+
+  checkCleared() {
+    if (this.enemies.countActive() > 0 || this.cleared[this.roomName]) return;
+    this.cleared[this.roomName] = true;
+    this.setDoors(true);
+    this.say('Room cleared!');
+    this.cameras.main.flash(120, 255, 255, 255);
+  }
+
+  // ---- pickups ----
+  spawnChest(roomName, tx, ty) {
+    const opened = !!this.opened[roomName];
+    const c = this.pickups.create(tx * T + T / 2, ty * T + T / 2, 'obj16', opened ? ART.objects.chestOpen : ART.objects.chestClosed);
+    c.kind = 'chest'; c.roomName = roomName; c.body.setImmovable(true); c.setDepth(c.y);
+    if (!opened) { c.body.setSize(14, 10).setOffset(1, 8); }
+    else { c.body.enable = false; }
+  }
+
+  takePickup(p) {
+    if (p.kind !== 'chest' || this.opened[p.roomName]) return;
+    this.opened[p.roomName] = true;
+    p.setFrame(ART.objects.chestOpen); p.body.enable = false;
+    const item = this.add.image(p.x, p.y - 4, 'items', ART.items.shield).setDepth(9000);
+    this.tweens.add({ targets: item, y: p.y - 18, duration: 500, ease: 'Back.Out' });
+    this.tweens.add({ targets: item, alpha: 0, delay: 1400, duration: 300, onComplete: () => item.destroy() });
+    this.hasShield = true;
+    this.shieldIcon.setVisible(true);
+    this.say('You found the Shield! Hold Shift to block.', 2600);
+  }
+
+  say(text, ms = 1400) {
+    this.banner.setText(text).setVisible(true);
+    if (this.bannerTimer) this.bannerTimer.remove();
+    this.bannerTimer = this.time.delayedCall(ms, () => this.banner.setVisible(false));
+  }
+
+  // ---- animations ----
   buildAnims() {
     const H = ART.hero, a = this.anims;
     for (const [dir, row] of Object.entries(H.walkRow)) {
@@ -183,7 +341,7 @@ class Garden extends Phaser.Scene {
     e.think = () => {
       const dirs = [['down', 0, 1], ['up', 0, -1], ['left', -1, 0], ['right', 1, 0], ['idle', 0, 0]];
       const [name, dx, dy] = Phaser.Utils.Array.GetRandom(dirs);
-      if (name === 'idle') { e.setVelocity(0); e.anims.stop(); e.setFrame(0); }
+      if (name === 'idle') { e.setVelocity(0); e.anims.stop(); e.setFrame(ART.stump.row.down * ART.stump.cols); }
       else { e.setVelocity(dx * 25, dy * 25); e.play('stump-' + name, true); }
     };
     e.think();
@@ -217,22 +375,38 @@ class Garden extends Phaser.Scene {
     p.play('puff'); p.once('animationcomplete', () => p.destroy());
     if (e.timer) e.timer.remove();
     e.destroy();
+    this.checkCleared();
   }
 
   hurtHero(e) {
-    if (this.time.now < this.invulnUntil || !e.active) return;
+    if (this.time.now < this.invulnUntil || !e.active || this.changingRoom) return;
+    const away = new Phaser.Math.Vector2(this.hero.x - e.x, this.hero.y - e.y).normalize();
+
+    // Shield up and the enemy is in front of you: no damage, it bounces off.
+    if (this.blocking) {
+      const f = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] }[this.facing];
+      if (-away.x * f[0] - away.y * f[1] > 0.3) {
+        e.stunned = true; e.setVelocity(-away.x * 150, -away.y * 150); e.setTintFill(0xffffff);
+        this.time.delayedCall(90, () => e.active && e.clearTint());
+        this.time.delayedCall(400, () => { if (!e.active) return; e.stunned = false; if (e.kind === 'stump') e.think(); });
+        this.cameras.main.shake(50, 0.003);
+        this.invulnUntil = this.time.now + 250;
+        return;
+      }
+    }
+
     this.hearts = Math.max(0, this.hearts - 0.5);
     this.drawHearts();
     this.invulnUntil = this.time.now + 1000;
-    const kb = new Phaser.Math.Vector2(this.hero.x - e.x, this.hero.y - e.y).normalize().scale(160);
-    this.hero.setVelocity(kb.x, kb.y);
-    // the enemy bounces off too, so it can't sit on top of you
-    e.stunned = true; e.setVelocity(-kb.x * 0.6, -kb.y * 0.6);
-    this.time.delayedCall(500, () => { if (!e.active) return; e.stunned = false; if (e.kind === 'stump') e.think(); });
+    this.hero.setVelocity(away.x * 160, away.y * 160);
     this.hurtUntil = this.time.now + 180;
+    // the enemy bounces off too, so it can't sit on top of you
+    e.stunned = true; e.setVelocity(-away.x * 100, -away.y * 100);
+    this.time.delayedCall(500, () => { if (!e.active) return; e.stunned = false; if (e.kind === 'stump') e.think(); });
     this.cameras.main.shake(100, 0.008);
     this.tweens.add({ targets: this.hero, alpha: 0.2, duration: 80, yoyo: true, repeat: 5, onComplete: () => this.hero.setAlpha(1) });
     if (this.hearts <= 0) {
+      this.changingRoom = true;
       this.cameras.main.fade(600, 0, 0, 0);
       this.time.delayedCall(700, () => this.scene.restart());
     }
@@ -250,17 +424,32 @@ class Garden extends Phaser.Scene {
   update() {
     const k = this.keys, h = this.hero;
     const now = this.time.now;
-    if (this.graceUntil === null) this.graceUntil = now + 1500;   // enemies leave you alone right after spawn
+    if (this.graceUntil === null) this.graceUntil = now + 1500;   // enemies leave you alone right after entering
 
     // chasers
     this.enemies.children.iterate(e => {
       if (!e || !e.active || e.kind !== 'spider' || e.stunned) return;
       const d = Phaser.Math.Distance.Between(e.x, e.y, h.x, h.y);
-      if (d < 70 && this.time.now > this.graceUntil) { this.physics.moveToObject(e, h, 40); e.setFlipX(e.body.velocity.x < 0); } else e.setVelocity(0);
+      if (d < 70 && now > this.graceUntil && !this.changingRoom) { this.physics.moveToObject(e, h, 40); e.setFlipX(e.body.velocity.x < 0); } else e.setVelocity(0);
     });
 
+    // watchdog: never let a missed animation event lock the hero in the attack pose
+    if (this.attacking && now > this.attackStarted + 700) this.endSwing();
+
+    this.shieldSprite.setVisible(false);
+    if (this.changingRoom) { h.setVelocity(0); return; }
     if (this.hurtUntil && now < this.hurtUntil) return;           // knockback owns the velocity
     if (this.attacking) { h.setVelocity(0); return; }
+
+    // shield: hold to block, you stand still
+    this.blocking = this.hasShield && (k.shift.isDown || k.x.isDown);
+    if (this.blocking) {
+      h.setVelocity(0); h.anims.stop(); h.setFrame(ART.hero.walkRow[this.facing] * ART.hero.walkCols);
+      const off = { down: [0, 9], up: [0, -11], left: [-9, -1], right: [9, -1] }[this.facing];
+      h.setDepth(h.y);
+      this.shieldSprite.setPosition(h.x + off[0], h.y + off[1]).setVisible(true).setDepth(this.facing === 'up' ? h.depth - 0.1 : h.depth + 0.1);
+      return;
+    }
 
     let vx = 0, vy = 0;
     if (k.left.isDown || k.a.isDown) vx = -1; else if (k.right.isDown || k.d.isDown) vx = 1;
@@ -284,31 +473,34 @@ class Garden extends Phaser.Scene {
 
   swing() {
     if (this.attacking) return;
-    this.attacking = true;
+    this.attacking = true; this.attackStarted = this.time.now;
     const h = this.hero, dir = this.facing;
     h.setTexture('heroAtk'); this.setHeroBody('heroAtk');
     h.play('atk-' + dir);
 
     const off = { down: [0, 12], up: [0, -14], left: [-13, 0], right: [13, 0] }[dir];
     const z = this.swordZone;
-    z.setPosition(h.x + off[0], h.y + off[1]);
     z.body.enable = true;
     z.body.reset(h.x + off[0], h.y + off[1]);
 
-    h.once('animationcomplete', () => {
-      z.body.enable = false;
-      h.setTexture('hero'); this.setHeroBody('hero');
-      h.setFrame(ART.hero.walkRow[dir] * ART.hero.walkCols);
-      this.attacking = false;
-    });
+    h.once('animationcomplete', () => this.endSwing());
+  }
+
+  endSwing() {
+    if (!this.attacking) return;
+    const h = this.hero;
+    this.swordZone.body.enable = false;
+    h.setTexture('hero'); this.setHeroBody('hero');
+    h.setFrame(ART.hero.walkRow[this.facing] * ART.hero.walkCols);
+    this.attacking = false;
   }
 }
 
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
-  width: ROOM[0].length * T,
-  height: ROOM.length * T,
+  width: 16 * T,
+  height: 11 * T,
   zoom: ZOOM,
   pixelArt: true,
   backgroundColor: '#10141c',
