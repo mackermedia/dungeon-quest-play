@@ -5,6 +5,6 @@
 - `spider.png`: from "16x16 animated critters" by HelplessIsland (patvanmackelberg), CC0, background keyed out. https://opengameart.org/content/16x16-animated-critters
 
 Frame layouts:
-- hero-*.png is 272x256. Walk frames are 16x32 (grid 17 cols): rows 0..3 = down, left, up, right; frames 0..3 of each row walk. Attack frames are 32x32 (grid 8 cols): rows 4..7 (in 32px rows) = down, up, right, left; frames 0..3.
-- log.png is 192x128, 32x32 frames, 6 cols x 4 rows: rows = down, right, up, left (verify); frames 0..3 walk, 4..5 sleep.
+- hero-*.png is 272x256. Walk frames are 16x32 (grid 17 cols): rows 0..3 = down, right, up, left (verified in-game 10/7); frames 0..3 of each row walk. Attack frames are 32x32 (grid 8 cols): rows 4..7 (in 32px rows) = down, up, right, left; frames 0..3.
+- log.png is 192x128, 32x32 frames, 6 cols x 4 rows: rows = left, right, up, down (verified against the sheet 10/7); frames 0..3 walk, 4..5 sleep.
 - spider.png is 64x64, 16x16 frames, 4 rows x 4 frames.

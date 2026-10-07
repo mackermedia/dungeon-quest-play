@@ -105,6 +105,9 @@ const ROOMS = {
 };
 const START_ROOM = 'entrance';
 
+// Progress that survives dying (Zelda keeps your stuff). Only a page reload starts fresh.
+const PROGRESS = { cleared: {}, opened: {}, hasShield: false };
+
 class Garden extends Phaser.Scene {
   preload() {
     this.load.image('tiles', ART.tiles.sheet);
@@ -123,9 +126,9 @@ class Garden extends Phaser.Scene {
 
     // Things that survive room changes
     this.hearts = 3; this.maxHearts = 3;
-    this.hasShield = false;
-    this.cleared = {};          // room name -> true once its enemies are gone
-    this.opened = {};           // room name -> true once its chest was opened
+    this.hasShield = PROGRESS.hasShield;
+    this.cleared = PROGRESS.cleared;   // room name -> true once its enemies are gone
+    this.opened = PROGRESS.opened;     // room name -> true once its chest was opened
 
     // Hero
     this.hero = this.physics.add.sprite(0, 0, 'hero', 0);
@@ -154,7 +157,7 @@ class Garden extends Phaser.Scene {
     for (let i = 0; i < this.maxHearts; i++) {
       this.heartSprites.push(this.add.image(6 + i * 14, 6, 'obj16', ART.objects.heart.full).setOrigin(0, 0).setDepth(10000).setScrollFactor(0));
     }
-    this.shieldIcon = this.add.image(6 + this.maxHearts * 14 + 4, 6, 'items', ART.items.shield).setOrigin(0, 0).setDepth(10000).setScrollFactor(0).setVisible(false);
+    this.shieldIcon = this.add.image(6 + this.maxHearts * 14 + 4, 6, 'items', ART.items.shield).setOrigin(0, 0).setDepth(10000).setScrollFactor(0).setVisible(this.hasShield);
     this.banner = this.add.text(128, 60, '', { fontFamily: 'monospace', fontSize: '8px', color: '#fff8e0', backgroundColor: '#10141cc0', padding: { x: 4, y: 2 } })
       .setOrigin(0.5).setDepth(10000).setScrollFactor(0).setVisible(false);
     this.drawHearts();
@@ -299,7 +302,7 @@ class Garden extends Phaser.Scene {
     const item = this.add.image(p.x, p.y - 4, 'items', ART.items.shield).setDepth(9000);
     this.tweens.add({ targets: item, y: p.y - 18, duration: 500, ease: 'Back.Out' });
     this.tweens.add({ targets: item, alpha: 0, delay: 1400, duration: 300, onComplete: () => item.destroy() });
-    this.hasShield = true;
+    this.hasShield = true; PROGRESS.hasShield = true;
     this.shieldIcon.setVisible(true);
     this.say('You found the Shield! Hold Shift to block.', 2600);
   }
